@@ -14,9 +14,11 @@ from dotenv import load_dotenv
 
 from src.agents.base import AgentExecution, AgentTaskSpec, BaseAgent
 from src.utils.docker_utils import (
+    build_ca_cert_args,
+    build_custom_hosts_args,
+    inject_lobster_workspace,
     run_warmup,
     setup_skills,
-    inject_lobster_workspace,
     TMP_WORKSPACE,
 )
 from src.utils.grading import extract_usage_from_jsonl
@@ -262,10 +264,19 @@ class HermesAgentAgent(BaseAgent):
                 continue
             env_args += ["-e", f"{key}={value}"]
 
+        # When custom CA certs are mounted, tell Python HTTP libraries to use the system bundle.
+        if os.environ.get("CA_CERTIFICATES_HOST_PATH", "").strip():
+            system_ca_bundle = "/etc/ssl/certs/ca-certificates.crt"
+            for var_name in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+                env_args += ["-e", f"{var_name}={system_ca_bundle}"]
+
+        networking_args = build_custom_hosts_args() + build_ca_cert_args()
+
         cmd = [
             "docker", "run", "-d",
             "--name", task_id,
             *env_args,
+            *networking_args,
             "-v", f"{workspace_path}:/app:ro",
             self.image,
             "/bin/bash", "-c", "tail -f /dev/null",
@@ -275,6 +286,7 @@ class HermesAgentAgent(BaseAgent):
         if r.returncode != 0:
             raise RuntimeError(f"hermes-agent container startup failed:\n{r.stderr}")
         logger.info("[%s] Container ID: %s", task_id, r.stdout.strip()[:12])
+        self._update_ca_certificates(task_id)
 
         if tmp_path and os.path.exists(tmp_path):
             subprocess.run(
@@ -287,6 +299,21 @@ class HermesAgentAgent(BaseAgent):
             )
             if cp_r.returncode != 0:
                 logger.error("[%s] Temp file copy failed: %s", task_id, cp_r.stderr)
+
+    def _update_ca_certificates(self, task_id: str) -> None:
+        """Run update-ca-certificates inside the container if CA certs were mounted."""
+        if not os.environ.get("CA_CERTIFICATES_HOST_PATH", "").strip():
+            return
+        logger.info("[%s] Updating CA certificates in hermes-agent container...", task_id)
+        r = subprocess.run(
+            ["docker", "exec", task_id, "update-ca-certificates"],
+            capture_output=True,
+            text=True,
+        )
+        if r.returncode != 0:
+            logger.warning("[%s] hermes-agent update-ca-certificates failed: %s", task_id, r.stderr.strip())
+        else:
+            logger.info("[%s] hermes-agent CA certificates updated successfully", task_id)
 
     def _prepare_workspace(self, task_id: str) -> None:
         r = subprocess.run(

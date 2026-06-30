@@ -18,7 +18,13 @@ from src.agents.codex.backend import (
     load_skill_documents,
     prepare_codex_prompt,
 )
-from src.utils.docker_utils import run_warmup, setup_skills, snapshot_workspace_state
+from src.utils.docker_utils import (
+    build_ca_cert_args,
+    build_custom_hosts_args,
+    run_warmup,
+    setup_skills,
+    snapshot_workspace_state,
+)
 from src.utils.endpoint_utils import normalize_openrouter_base_url_for_openclaw
 
 logger = logging.getLogger(__name__)
@@ -358,6 +364,14 @@ class CodexAgent(BaseAgent):
             env_args += ["-e", f"{key}={value}"]
             logger.info("[%s] Injecting lobster env: %s=%s***", task_id, key, value[:4])
 
+        # When custom CA certs are mounted, tell Python HTTP libraries to use the system bundle.
+        if os.environ.get("CA_CERTIFICATES_HOST_PATH", "").strip():
+            system_ca_bundle = "/etc/ssl/certs/ca-certificates.crt"
+            for var_name in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+                env_args += ["-e", f"{var_name}={system_ca_bundle}"]
+
+        networking_args = build_custom_hosts_args() + build_ca_cert_args()
+
         cmd = [
             "docker",
             "run",
@@ -365,6 +379,7 @@ class CodexAgent(BaseAgent):
             "--name",
             task_id,
             *env_args,
+            *networking_args,
             "-v",
             f"{exec_path}:/workspace:ro",
             self.image,
@@ -377,6 +392,22 @@ class CodexAgent(BaseAgent):
         if r.returncode != 0:
             raise RuntimeError(f"Codex container startup failed:\n{r.stderr}")
         logger.info("[%s] Container ID: %s", task_id, r.stdout.strip()[:12])
+        self._update_ca_certificates(task_id)
+
+    def _update_ca_certificates(self, task_id: str) -> None:
+        """Run update-ca-certificates inside the container if CA certs were mounted."""
+        if not os.environ.get("CA_CERTIFICATES_HOST_PATH", "").strip():
+            return
+        logger.info("[%s] Updating CA certificates in Codex container...", task_id)
+        r = subprocess.run(
+            ["docker", "exec", task_id, "update-ca-certificates"],
+            capture_output=True,
+            text=True,
+        )
+        if r.returncode != 0:
+            logger.warning("[%s] Codex update-ca-certificates failed: %s", task_id, r.stderr.strip())
+        else:
+            logger.info("[%s] Codex CA certificates updated successfully", task_id)
 
     def _prepare_workspace(self, task_id: str, workspace_path: str) -> None:
         r = subprocess.run(

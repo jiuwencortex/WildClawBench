@@ -14,7 +14,13 @@ from dotenv import load_dotenv
 
 from src.agents.base import AgentExecution, AgentTaskSpec, BaseAgent
 from src.agents.claudecode.transcript import convert_claudecode_chat_to_openclaw_jsonl
-from src.utils.docker_utils import run_warmup, setup_skills, snapshot_workspace_state
+from src.utils.docker_utils import (
+    build_ca_cert_args,
+    build_custom_hosts_args,
+    run_warmup,
+    setup_skills,
+    snapshot_workspace_state,
+)
 from src.utils.endpoint_utils import normalize_openrouter_base_url_for_claudecode
 
 load_dotenv()
@@ -379,8 +385,15 @@ class ClaudeCodeAgent(BaseAgent):
             if value:
                 env_args += ["-e", f"{key}={value}"]
 
+        # When custom CA certs are mounted, tell Python HTTP libraries to use the system bundle.
+        if os.environ.get("CA_CERTIFICATES_HOST_PATH", "").strip():
+            system_ca_bundle = "/etc/ssl/certs/ca-certificates.crt"
+            for var_name in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+                env_args += ["-e", f"{var_name}={system_ca_bundle}"]
+
         exec_path = os.path.join(workspace_path, "exec")
         os.makedirs(exec_path, exist_ok=True)
+        networking_args = build_custom_hosts_args() + build_ca_cert_args()
         cmd = [
             "docker",
             "run",
@@ -388,6 +401,7 @@ class ClaudeCodeAgent(BaseAgent):
             "--name",
             task_id,
             *env_args,
+            *networking_args,
             "-v",
             f"{exec_path}:/workspace:ro",
             self.image,
@@ -398,7 +412,23 @@ class ClaudeCodeAgent(BaseAgent):
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode != 0:
             raise RuntimeError(f"ClaudeCode container startup failed:\n{r.stderr}")
+        self._update_ca_certificates(task_id)
         self._patch_claudecode_runtime(task_id)
+
+    def _update_ca_certificates(self, task_id: str) -> None:
+        """Run update-ca-certificates inside the container if CA certs were mounted."""
+        if not os.environ.get("CA_CERTIFICATES_HOST_PATH", "").strip():
+            return
+        logger.info("[%s] Updating CA certificates in ClaudeCode container...", task_id)
+        r = subprocess.run(
+            ["docker", "exec", task_id, "update-ca-certificates"],
+            capture_output=True,
+            text=True,
+        )
+        if r.returncode != 0:
+            logger.warning("[%s] ClaudeCode update-ca-certificates failed: %s", task_id, r.stderr.strip())
+        else:
+            logger.info("[%s] ClaudeCode CA certificates updated successfully", task_id)
 
     def _patch_claudecode_runtime(self, task_id: str) -> None:
         patch_cmd = r"""python3 - <<'PY'

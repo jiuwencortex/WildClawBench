@@ -18,6 +18,67 @@ WORKSPACE_BASELINE_PATH = "/tmp/wildclaw_workspace_baseline.json"
 
 BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "")
 
+
+def build_custom_hosts_args() -> list[str]:
+    """Parse DOCKER_CUSTOM_HOSTS and return Docker --add-host arguments.
+
+    Format: ``host1:ip1,host2:ip2`` or ``host1:ip1;host2:ip2``
+    (comma or semicolon separated).
+
+    Empty or unset variable returns an empty list.
+    """
+    raw = os.environ.get("DOCKER_CUSTOM_HOSTS", "").strip()
+    if not raw:
+        return []
+
+    args: list[str] = []
+    for segment in raw.replace(";", ",").split(","):
+        segment = segment.strip()
+        if not segment:
+            continue
+        if ":" not in segment:
+            logger.warning("Skipping invalid custom host entry (missing colon): %s", segment)
+            continue
+        host, ip = segment.rsplit(":", 1)
+        host = host.strip()
+        ip = ip.strip()
+        if not host or not ip:
+            logger.warning("Skipping invalid custom host entry (empty host or ip): %s", segment)
+            continue
+        args += ["--add-host", f"{host}:{ip}"]
+        logger.info("Docker custom host mapping: %s -> %s", host, ip)
+    return args
+
+
+def build_ca_cert_args() -> list[str]:
+    """Parse CA_CERTIFICATES_HOST_PATH and return Docker volume mount arguments.
+
+    Mounts the host CA certificates directory/file into the container's
+    system trust store at ``/usr/local/share/ca-certificates/`` and runs
+    ``update-ca-certificates`` via an entrypoint wrapper.
+
+    Empty or unset variable returns an empty list.
+    """
+    raw = os.environ.get("CA_CERTIFICATES_HOST_PATH", "").strip()
+    if not raw:
+        return []
+
+    host_path = Path(raw).expanduser()
+    if not host_path.exists():
+        logger.warning("CA_CERTIFICATES_HOST_PATH does not exist: %s", host_path)
+        return []
+
+    # Determine the target path inside the container
+    if host_path.is_dir():
+        target = "/usr/local/share/ca-certificates/custom"
+        logger.info("Mounting CA certificates directory: %s -> %s", host_path, target)
+        return ["-v", f"{host_path}:{target}:ro"]
+    else:
+        target = "/usr/local/share/ca-certificates/custom_ca.crt"
+        logger.info("Mounting CA certificate file: %s -> %s", host_path, target)
+        return ["-v", f"{host_path}:{target}:ro"]
+
+
 def remove_container(name: str) -> None:
     subprocess.run(["docker", "rm", "-f", name], capture_output=True)
 
@@ -54,20 +115,35 @@ def start_container(task_id: str, workspace_path: str, extra_env: str = "",
         env_args += ["-e", f"{key}={value}"]
         masked = value[:4] + "***"
         logger.info("[%s] Injecting lobster env: %s=%s", task_id, key, masked)
- 
+
+    # When custom CA certs are mounted, tell Python HTTP libraries to use the system bundle.
+    if os.environ.get("CA_CERTIFICATES_HOST_PATH", "").strip():
+        # update-ca-certificates produces the combined ca-certificates.crt
+        system_ca_bundle = "/etc/ssl/certs/ca-certificates.crt"
+        env_args += [
+            "-e", f"SSL_CERT_FILE={system_ca_bundle}",
+            "-e", f"REQUESTS_CA_BUNDLE={system_ca_bundle}",
+            "-e", f"CURL_CA_BUNDLE={system_ca_bundle}",
+        ]
+        logger.info("[%s] Injecting CA bundle env vars: %s", task_id, system_ca_bundle)
+
+    networking_args = build_custom_hosts_args() + build_ca_cert_args()
+
     cmd = [
         "docker", "run", "-d",
         "--name", task_id,
         *env_args,
+        *networking_args,
         "-v", f"{workspace}:/app:ro",
         DOCKER_IMAGE,
         "/bin/bash", "-c", "tail -f /dev/null",
     ]
-    logger.info("[%s] Starting container, mounting %s → /app (ro)", task_id, workspace)
+    logger.info("[%s] Starting container, mounting %s -> /app (ro)", task_id, workspace)
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(f"Container startup failed:\n{r.stderr}")
     logger.info("[%s] Container ID: %s", task_id, r.stdout.strip()[:12])
+    _update_ca_certificates(task_id)
 
     if tmp_path and os.path.exists(tmp_path):
         mkdir_cmd = ["docker", "exec", task_id, "mkdir", "-p", "/tmp_workspace/tmp"]
@@ -419,6 +495,104 @@ def inject_lobster_workspace(task_id: str, workspace_path: str) -> None:
         logger.error("[%s] Lobster workspace copy failed: %s", task_id, r.stderr)
     else:
         logger.info("[%s] Lobster workspace copied: %s → /root/", task_id, workspace_path)
+
+
+def _update_ca_certificates(task_id: str) -> None:
+    """Run update-ca-certificates inside the container if CA certs were mounted.
+    
+    Also injects the custom CA certificate into Python certifi bundles so that
+    Python HTTP clients (requests, httpx, urllib3, openai, etc.) trust it.
+    """
+    raw = os.environ.get("CA_CERTIFICATES_HOST_PATH", "").strip()
+    if not raw:
+        return
+
+    host_path = Path(raw).expanduser()
+    if not host_path.exists():
+        logger.warning("[%s] CA_CERTIFICATES_HOST_PATH does not exist: %s", task_id, host_path)
+        return
+
+    logger.info("[%s] Updating CA certificates in container...", task_id)
+    r = subprocess.run(
+        ["docker", "exec", task_id, "update-ca-certificates"],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0:
+        logger.warning("[%s] update-ca-certificates failed: %s", task_id, r.stderr.strip())
+    else:
+        logger.info("[%s] System CA certificates updated", task_id)
+
+    # Inject custom CA certs into Python certifi bundles
+    # so requests/httpx/openai inside the container also trust them.
+    _inject_ca_into_certifi(task_id, host_path)
+
+
+def _inject_ca_into_certifi(task_id: str, host_path: Path) -> None:
+    """Append custom CA certificate(s) to every certifi cacert.pem in the container."""
+    # Determine source paths inside the container
+    if host_path.is_dir():
+        # When a directory is mounted, the individual .crt files are in /usr/local/share/ca-certificates/custom/
+        custom_cert_paths = "/usr/local/share/ca-certificates/custom/*.crt"
+    else:
+        # When a single file is mounted
+        custom_cert_paths = "/usr/local/share/ca-certificates/custom_ca.crt"
+
+    inject_script = f"""python3 - <<'PY'
+import glob
+import os
+import subprocess
+import sys
+
+custom_certs = []
+for p in glob.glob("{custom_cert_paths}"):
+    try:
+        with open(p, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read().strip()
+            if content:
+                custom_certs.append(content)
+    except Exception as e:
+        print(f"certifi-inject: failed to read {{p}}: {{e}}", file=sys.stderr)
+
+if not custom_certs:
+    print("certifi-inject: no custom CA certs found to inject")
+    sys.exit(0)
+
+custom_certs_text = "\\n\\n".join(custom_certs)
+
+# Find all certifi cacert.pem files
+result = subprocess.run(
+    ["find", "/", "-name", "cacert.pem", "-path", "*/certifi/*"],
+    capture_output=True, text=True,
+)
+certifi_paths = [p for p in result.stdout.strip().split("\\n") if p]
+
+updated = 0
+for certifi_path in certifi_paths:
+    try:
+        with open(certifi_path, "r", encoding="utf-8", errors="ignore") as f:
+            existing = f.read()
+        if custom_certs_text in existing:
+            print(f"certifi-inject: already present in {{certifi_path}}")
+            continue
+        with open(certifi_path, "a", encoding="utf-8") as f:
+            f.write("\\n\\n" + custom_certs_text + "\\n")
+        updated += 1
+        print(f"certifi-inject: updated {{certifi_path}}")
+    except Exception as e:
+        print(f"certifi-inject: failed to patch {{certifi_path}}: {{e}}", file=sys.stderr)
+
+print(f"certifi-inject: patched {{updated}} certifi bundle(s)")
+PY"""
+
+    r = subprocess.run(
+        ["docker", "exec", task_id, "/bin/bash", "-c", inject_script],
+        capture_output=True,
+        text=True,
+    )
+    for line in (r.stdout + r.stderr).strip().splitlines():
+        if line.strip():
+            logger.info("[%s] %s", task_id, line.strip())
 
 
 def _copy_dir_from_container(task_id: str, src: str, dest: str) -> bool:
