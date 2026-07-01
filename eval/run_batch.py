@@ -321,6 +321,12 @@ def main() -> None:
             openrouter_api_key=OPENROUTER_API_KEY,
             openrouter_base_url=OPENROUTER_BASE_URL_OPENCLAW,
         )
+    elif args.agent_backend == "jiuwenswarm":
+        from src.agents.jiuwenswarm import JiuwenSwarmAgent
+        backend = JiuwenSwarmAgent(
+            openrouter_api_key=OPENROUTER_API_KEY,
+            openrouter_base_url=OPENROUTER_BASE_URL_OPENCLAW,
+        )
     else:
         backend = OpenClawAgent(
             gateway_port=GATEWAY_PORT,

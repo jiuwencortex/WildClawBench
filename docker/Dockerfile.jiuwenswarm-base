@@ -1,0 +1,36 @@
+ARG BASE_IMAGE=python:3.11.4-slim-bookworm
+FROM ${BASE_IMAGE}
+
+# Install system deps: git for openjiuwen dependency, build-essential for compiling deps
+# Note: No nodejs/npm (web frontend not needed for benchmarking)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git build-essential ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# ------------------------------------------------------------------
+# Pre-install jiuwenswarm and ALL its dependencies.
+# This is done at image build time (slow, ~10 min) so that runtime
+# installs are fast (~seconds) when switching branches.
+#
+# Build instructions (run from WildClawBench repo root):
+#   docker build -f docker/Dockerfile.jiuwenswarm-base \
+#     -t wildclawbench-jiuwenswarm-base:v0.1 \
+#     --build-arg JIUWENSWARM_SOURCE=/absolute/path/to/jiuwenswarm .
+#
+# At runtime, the harness:
+#   1. Copies jiuwenswarm source from host into /opt/jiuwenswarm
+#   2. Runs: pip install -e .   (fast — all deps already present)
+# ------------------------------------------------------------------
+
+# By default, source is copied at runtime. Set JIUWENSWARM_SOURCE
+# build arg to pre-install into the image.
+ARG JIUWENSWARM_SOURCE=""
+RUN if [ -n "$JIUWENSWARM_SOURCE" ]; then \
+        cp -r "$JIUWENSWARM_SOURCE" /opt/jiuwenswarm && \
+        cd /opt/jiuwenswarm && \
+        pip install --no-cache-dir -e "." && \
+        JIUWENSWARM_SKIP_DOTENV=1 jiuwenswarm-init; \
+    fi
+
+# Container stays alive for docker exec (WildClawBench pattern)
+CMD ["tail", "-f", "/dev/null"]

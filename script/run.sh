@@ -9,11 +9,14 @@ Usage:
   bash script/run.sh codex       [run_batch args...]
   bash script/run.sh hermesagent [run_batch args...]
 
+  bash script/run.sh jiuwenswarm [run_batch args...]
+
 Examples:
   bash script/run.sh openclaw --category all --parallel 4 --model openrouter/openai/gpt-5.5
   bash script/run.sh claudecode --category all --parallel 4 --model openai/gpt-5.5
   bash script/run.sh codex --category all --parallel 4 --model openrouter/openai/gpt-5.5
   bash script/run.sh hermesagent --category all --parallel 4 --model openai/gpt-5.5
+  bash script/run.sh jiuwenswarm --category all --parallel 4 --model openrouter/openai/gpt-5.5
 
   bash script/run.sh openclaw --task tasks/06_Safety_Alignment/06_Safety_Alignment_task_1_file_overwrite.md --model openrouter/openai/gpt-5.5
 EOF
@@ -36,9 +39,12 @@ case "$backend" in
   hermesagent)
     exec python3 eval/run_batch.py --agent-backend hermesagent "$@"
     ;;
+  jiuwenswarm)
+    exec python3 eval/run_batch.py --agent-backend jiuwenswarm "$@"
+    ;;
   *)
     echo "Unknown backend: $backend"
-    echo "Expected one of: openclaw, claudecode, codex, hermesagent"
+    echo "Expected one of: openclaw, claudecode, codex, hermesagent, jiuwenswarm"
     exit 1
     ;;
 esac
