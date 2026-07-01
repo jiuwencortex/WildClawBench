@@ -8,7 +8,7 @@
 
 
 [![Tasks](https://img.shields.io/badge/Tasks-60-blue)]()
-[![Harnesses](https://img.shields.io/badge/Harnesses-4-purple)]()
+[![Harnesses](https://img.shields.io/badge/Harnesses-5-purple)]()
 [![Models](https://img.shields.io/badge/Models-19-green)]()
 [![Leaderboard](https://img.shields.io/badge/🏆_Leaderboard-WildClawBench-8c2416)](https://internlm.github.io/WildClawBench/)
 <br>
@@ -52,7 +52,7 @@ Most agent benchmarks test isolated capabilities — calling a function, parsing
 ## News
 
 - **2026-06** ByteDance Seed's **[Seed2.1 release](https://seed.bytedance.com/en/blog/seed2-1-officially-released-advancing-ai-productivity)** includes WildClawBench in its agent evaluations. Thanks for the recognition!
-- **2026-05** We released a new version with **four agent harnesses** — OpenClaw, Claude Code, Codex CLI, and Hermes Agent — so the same 60-task suite can be evaluated under multiple scaffolds.
+- **2026-05** We released a new version with **five agent harnesses** — OpenClaw, Claude Code, Codex CLI, Hermes Agent, and JiuwenSwarm — so the same 60-task suite can be evaluated under multiple scaffolds.
 - **2026-05** We published a **[technical report PDF](WildClawBench_report.pdf)**.
 - **2026-05** Tencent’s **[Hunyuan3 Preview](https://hunyuan.tencent.com/research/hy3)** page reports WildClawBench evaluation scores. Thanks for the recognition!
 
@@ -63,7 +63,7 @@ Most agent benchmarks test isolated capabilities — calling a function, parsing
 WildClawBench reports two complementary leaderboards:
 
 1. **Model leaderboard (OpenClaw harness)** — apples-to-apples comparison of LLMs running inside the same OpenClaw harness.
-2. **Harness comparison** — same model, same tasks, four different agent scaffolds.
+2. **Harness comparison** — same model, same tasks, five different agent scaffolds.
 
 Full interactive leaderboard at [internlm.github.io/WildClawBench](https://internlm.github.io/WildClawBench/).
 
@@ -175,19 +175,20 @@ newgrp docker
 
 ### Download Images
 
-WildClawBench ships **four** Docker images, one per harness. They are all hosted on [HuggingFace](https://huggingface.co/datasets/internlm/WildClawBench/tree/main/Images). Pick the one(s) that match the harness you want to evaluate:
+WildClawBench ships **five** Docker images, one per harness. They are all hosted on [HuggingFace](https://huggingface.co/datasets/internlm/WildClawBench/tree/main/Images). Pick the one(s) that match the harness you want to evaluate:
 
 | Harness | Image tarball | Loaded tag |
 |---|---|---|
-| OpenClaw     | `wildclawbench-ubuntu_v1.3.tar`                       | `wildclawbench-ubuntu:v1.3` |
-| Claude Code  | `wildclawbench-claudecode-ubuntu_v0.2-patched.tar`    | `wildclawbench-claudecode-ubuntu:v0.2` |
-| Codex CLI    | `wildclawbench-codex-ubuntu_v0.0.tar`                 | `wildclawbench-codex-ubuntu:v0.0` |
-| Hermes Agent | `wildclawbench-hermes-agent-v0.5.tar.gz`              | `wildclawbench-hermes-agent:v0.5` |
+| OpenClaw      | `wildclawbench-ubuntu_v1.3.tar`                       | `wildclawbench-ubuntu:v1.3` |
+| Claude Code   | `wildclawbench-claudecode-ubuntu_v0.2-patched.tar`    | `wildclawbench-claudecode-ubuntu:v0.2` |
+| Codex CLI     | `wildclawbench-codex-ubuntu_v0.0.tar`                 | `wildclawbench-codex-ubuntu:v0.0` |
+| Hermes Agent  | `wildclawbench-hermes-agent-v0.5.tar.gz`              | `wildclawbench-hermes-agent:v0.5` |
+| JiuwenSwarm   | Build from source (see below)                         | `wildclawbench-jiuwenswarm-base:v0.1` |
 
 ```bash
 pip install -U "huggingface_hub[cli]"
 
-# Download the images you need (or all four)
+# Download the images you need (or all five)
 hf download internlm/WildClawBench Images/wildclawbench-ubuntu_v1.3.tar                    --repo-type dataset --local-dir .
 hf download internlm/WildClawBench Images/wildclawbench-claudecode-ubuntu_v0.2-patched.tar --repo-type dataset --local-dir .
 hf download internlm/WildClawBench Images/wildclawbench-codex-ubuntu_v0.0.tar              --repo-type dataset --local-dir .
@@ -201,6 +202,23 @@ docker load -i Images/wildclawbench-ubuntu_v1.3.tar
 docker load -i Images/wildclawbench-claudecode-ubuntu_v0.2-patched.tar
 docker load -i Images/wildclawbench-codex-ubuntu_v0.0.tar
 docker load -i Images/wildclawbench-hermes-agent-v0.5.tar.gz
+```
+
+#### Building the JiuwenSwarm image
+
+JiuwenSwarm requires Python 3.11 and must be built from source:
+
+```bash
+# Clone or use your existing jiuwenswarm source
+cd /path/to/jiuwenswarm
+
+# Build the image (copies source and pre-installs all dependencies)
+docker build -f Dockerfile.bench-base -t wildclawbench-jiuwenswarm-base:v0.1 .
+```
+
+Set the source path in `.env` (optional, defaults to `~/workspace/jiuwenswarm`):
+```
+JIUWENSWARM_SOURCE_PATH=/path/to/your/jiuwenswarm
 ```
 
 ### Download Task Data
@@ -247,13 +265,14 @@ BRAVE_API_KEY=your_brave_key_here  # required for search tasks
 - **Brave Search API Key** — Required for Search & Retrieval tasks. Get one (with free monthly credits) at [brave.com/search/api](https://brave.com/search/api/).
 - **Judge model** (optional) — `JUDGE_MODEL` controls the LLM used by judge-based grading metrics. Defaults to `openai/gpt-5.4`.
 
-Then run one of the four harnesses:
+Then run one of the five harnesses:
 
 ```bash
 bash script/run.sh openclaw     --category all --parallel 4 --model openrouter/openai/gpt-5.5
 bash script/run.sh claudecode   --category all --parallel 4 --model openai/gpt-5.5
 bash script/run.sh codex        --category all --parallel 4 --model openrouter/openai/gpt-5.5
 bash script/run.sh hermesagent  --category all --parallel 4 --model openai/gpt-5.5
+bash script/run.sh jiuwenswarm  --category all --parallel 4 --model openrouter/openai/gpt-5.5
 ```
 
 Single-task runs are also supported:
@@ -264,7 +283,7 @@ bash script/run.sh openclaw --task tasks/06_Safety_Alignment/06_Safety_Alignment
 ```
 
 > Model-name conventions differ per harness:
-> - **OpenClaw / Codex** expect `openrouter/<provider>/<model>` (since they hit OpenRouter directly).
+> - **OpenClaw / Codex / JiuwenSwarm** expect `openrouter/<provider>/<model>` (since they hit OpenRouter directly).
 > - **Claude Code / Hermes Agent** expect `<provider>/<model>` (the `openrouter/` prefix is added internally).
 
 ### Using a Custom Model Endpoint (Without OpenRouter)
