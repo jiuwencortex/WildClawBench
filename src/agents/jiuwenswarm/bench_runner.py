@@ -43,7 +43,7 @@ def main() -> int:
         "--project-dir", TMP_WORKSPACE,
         "--trusted-dir", TMP_WORKSPACE,
         "--gateway-url", "ws://127.0.0.1:19001/tui",
-        "--json",
+        "--jsonl",
         "--timeout", str(cfg.get("timeout", 600)),
         prompt,
     ]
@@ -51,10 +51,7 @@ def main() -> int:
     env = os.environ.copy()
     env["JIUWENSWARM_SKIP_DOTENV"] = "1"
 
-    result = subprocess.run(cmd, env=env, capture_output=True, text=True)
-    print(result.stdout)
-    if result.stderr:
-        print(result.stderr, file=sys.stderr)
+    result = subprocess.run(cmd, env=env)
     return result.returncode
 
 
