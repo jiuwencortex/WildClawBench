@@ -35,6 +35,11 @@ JIUWENSWARM_SOURCE_PATH = os.environ.get(
     "JIUWENSWARM_SOURCE_PATH",
     os.path.expanduser("~/workspace/jiuwenswarm"),
 )
+AGENT_CORE_SOURCE_PATH = os.environ.get(
+    "AGENT_CORE_SOURCE_PATH",
+    os.path.expanduser("~/workspace/agent-core"),
+)
+AGENT_CORE_INSTALL_DIR = "/opt/agent-core"
 
 JIUWENSWARM_HOME = "/root/.jiuwenswarm"
 JIUWENSWARM_INSTALL_DIR = "/opt/jiuwenswarm"
@@ -349,46 +354,70 @@ class JiuwenSwarmAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def _install_jiuwenswarm(self, task_id: str) -> None:
-        """Copy source from host and install jiuwenswarm inside the container."""
-        if not os.path.isdir(self.source_path):
-            raise RuntimeError(f"jiuwenswarm source path not found: {self.source_path}")
+        """Copy agent-core + jiuwenswarm sources and install both in the container.
 
-        # Create install directory
+        We install agent-core first because jiuwenswarm depends on openjiuwen
+        and the base image may ship a stale version.
+        """
+        # ---- 1. agent-core (openjiuwen) ----
+        if not os.path.isdir(AGENT_CORE_SOURCE_PATH):
+            raise RuntimeError(f"agent-core source path not found: {AGENT_CORE_SOURCE_PATH}")
+
         r_mkdir = subprocess.run(
-            ["docker", "exec", task_id, "mkdir", "-p", JIUWENSWARM_INSTALL_DIR],
+            ["docker", "exec", task_id, "mkdir", "-p", AGENT_CORE_INSTALL_DIR],
             capture_output=True, text=True,
         )
         if r_mkdir.returncode != 0:
-            raise RuntimeError(f"mkdir install dir failed:\n{r_mkdir.stderr}")
+            raise RuntimeError(f"mkdir agent-core install dir failed:\n{r_mkdir.stderr}")
 
-        # Copy source
-        logger.info("[%s] Copying jiuwenswarm source from %s", task_id, self.source_path)
+        logger.info("[%s] Copying agent-core source from %s", task_id, AGENT_CORE_SOURCE_PATH)
         r_cp = subprocess.run(
-            ["docker", "cp", f"{self.source_path}/.", f"{task_id}:{JIUWENSWARM_INSTALL_DIR}/"],
+            ["docker", "cp", f"{AGENT_CORE_SOURCE_PATH}/.", f"{task_id}:{AGENT_CORE_INSTALL_DIR}/"],
             capture_output=True, text=True,
         )
         if r_cp.returncode != 0:
-            raise RuntimeError(f"jiuwenswarm source copy failed:\n{r_cp.stderr}")
+            raise RuntimeError(f"agent-core source copy failed:\n{r_cp.stderr}")
 
-        # Since the base image already has jiuwenswarm installed in editable mode
-        # (via __editable__.jiuwenswarm-0.2.2.pth pointing to /opt/jiuwenswarm),
-        # we just need to overwrite the source files. No pip reinstall needed.
-        # Only force reinstall if JIUWENSWARM_FORCE_REINSTALL=1.
-        force_reinstall = os.environ.get("JIUWENSWARM_FORCE_REINSTALL", "") == "1"
-        if force_reinstall:
-            logger.info("[%s] Force reinstall requested...", task_id)
-            r_install = subprocess.run(
-                ["docker", "exec", task_id, "/bin/bash", "-c",
-                 f"cd {JIUWENSWARM_INSTALL_DIR} && pip install -e . --no-build-isolation --no-cache-dir 2>&1"],
-                capture_output=True, text=True,
-            )
-            if r_install.returncode != 0:
-                raise RuntimeError(f"jiuwenswarm reinstall failed:\n{r_install.stderr}")
-            logger.info("[%s] jiuwenswarm reinstalled successfully", task_id)
-        else:
-            logger.info("[%s] Skipping pip reinstall (editable install picks up source changes)", task_id)
+        logger.info("[%s] Installing agent-core (openjiuwen) from source...", task_id)
+        r_install_ac = subprocess.run(
+            ["docker", "exec", task_id, "/bin/bash", "-c",
+             f"cd {AGENT_CORE_INSTALL_DIR} && pip install -e . --no-build-isolation --no-cache-dir 2>&1"],
+            capture_output=True, text=True,
+        )
+        if r_install_ac.returncode != 0:
+            raise RuntimeError(f"agent-core install failed:\n{r_install_ac.stderr}")
+        logger.info("[%s] agent-core installed successfully", task_id)
 
-        # Initialize workspace
+        # ---- 2. jiuwenswarm ----
+        if not os.path.isdir(self.source_path):
+            raise RuntimeError(f"jiuwenswarm source path not found: {self.source_path}")
+
+        r_mkdir2 = subprocess.run(
+            ["docker", "exec", task_id, "mkdir", "-p", JIUWENSWARM_INSTALL_DIR],
+            capture_output=True, text=True,
+        )
+        if r_mkdir2.returncode != 0:
+            raise RuntimeError(f"mkdir jiuwenswarm install dir failed:\n{r_mkdir2.stderr}")
+
+        logger.info("[%s] Copying jiuwenswarm source from %s", task_id, self.source_path)
+        r_cp2 = subprocess.run(
+            ["docker", "cp", f"{self.source_path}/.", f"{task_id}:{JIUWENSWARM_INSTALL_DIR}/"],
+            capture_output=True, text=True,
+        )
+        if r_cp2.returncode != 0:
+            raise RuntimeError(f"jiuwenswarm source copy failed:\n{r_cp2.stderr}")
+
+        logger.info("[%s] Installing jiuwenswarm from source (no-deps, agent-core already installed)...", task_id)
+        r_install = subprocess.run(
+            ["docker", "exec", task_id, "/bin/bash", "-c",
+             f"cd {JIUWENSWARM_INSTALL_DIR} && pip install -e . --no-deps --no-build-isolation --no-cache-dir 2>&1"],
+            capture_output=True, text=True,
+        )
+        if r_install.returncode != 0:
+            raise RuntimeError(f"jiuwenswarm install failed:\n{r_install.stderr}")
+        logger.info("[%s] jiuwenswarm installed successfully", task_id)
+
+        # ---- 3. Initialize workspace ----
         logger.info("[%s] Initializing jiuwenswarm workspace...", task_id)
         r_init = subprocess.run(
             ["docker", "exec", task_id, "/bin/bash", "-c",
