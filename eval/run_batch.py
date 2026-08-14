@@ -321,6 +321,24 @@ def main() -> None:
             openrouter_api_key=OPENROUTER_API_KEY,
             openrouter_base_url=OPENROUTER_BASE_URL_OPENCLAW,
         )
+    elif args.agent_backend == "jiuwenswarm":
+        from src.agents.jiuwenswarm import JiuwenSwarmAgent
+        if not args.jiuwenswarm_whl:
+            logger.error(
+                "--jiuwenswarm-whl <path> is required for --agent-backend jiuwenswarm "
+                "(the wheel is a per-task upload, never baked into the image)"
+            )
+            sys.exit(1)
+        # llm_forward upstream: dedicated env overrides win (bench orchestrators point
+        # these at the task's real model endpoint); otherwise fall back to OpenRouter.
+        upstream_base = os.environ.get("LLM_FORWARD_UPSTREAM_BASE_URL") or OPENROUTER_BASE_URL_OPENCLAW
+        upstream_key = os.environ.get("LLM_FORWARD_UPSTREAM_API_KEY") or OPENROUTER_API_KEY
+        backend = JiuwenSwarmAgent(
+            openrouter_api_key=upstream_key,
+            openrouter_base_url=upstream_base,
+            jiuwenswarm_whl_host_path=args.jiuwenswarm_whl,
+            jiuwenswarm_config_host_path=args.jiuwenswarm_config or "",
+        )
     else:
         backend = OpenClawAgent(
             gateway_port=GATEWAY_PORT,

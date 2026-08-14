@@ -1,0 +1,34 @@
+# Thin JiuwenSwarm harness image for WildClawBench.
+#
+# Deliberately does NOT bake jiuwenswarm in: jiuwenswarm is under active version
+# checking, so the wheel is a per-task input (uploaded on the test page, pip-installed
+# into the container at run start by src/agents/jiuwenswarm/runner.py). This image only
+# adds the runtime prereqs on top of the shared wildclawbench-ubuntu base.
+#
+# Build (see docs/jiuwenswarm-image.md):
+#   docker load -i Images/wildclawbench-ubuntu_v1.3.tar   # base, from HuggingFace
+#   docker build -f docker/Dockerfile.jiuwenswarm -t wildclawbench-jiuwenswarm-ubuntu:v0.1 .
+
+FROM wildclawbench-ubuntu:v1.3
+
+# JiuwenSwarm runtime deps (websocket client + proxy deps). Kept version-pinned where
+# the base allows; jiuwenswarm itself is intentionally absent.
+RUN pip install --no-cache-dir \
+        "websockets>=12,<16" \
+        "fastapi>=0.110" \
+        "uvicorn>=0.29" \
+        "httpx>=0.27" \
+        "python-dotenv>=1.0" \
+        "pyyaml>=6.0" \
+    || pip3 install --no-cache-dir \
+        "websockets>=12,<16" \
+        "fastapi>=0.110" \
+        "uvicorn>=0.29" \
+        "httpx>=0.27" \
+        "python-dotenv>=1.0" \
+        "pyyaml>=6.0"
+
+# Placeholders so the config/ transcript dirs always exist even before the wheel
+# installs (the runner also mkdirs them defensively).
+RUN mkdir -p /root/.jiuwenswarm/config /root/.jiuwenswarm/agent/workspace \
+             /root/.jiuwenswarm/skills /root/.openclaw/agents/main/sessions

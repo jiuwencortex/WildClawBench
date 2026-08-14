@@ -20,7 +20,7 @@ def build_run_batch_parser(default_model: str, default_parallel: int) -> argpars
     parser.add_argument(
         "--agent-backend",
         default="openclaw",
-        choices=["openclaw", "claudecode", "codex", "hermesagent"],
+        choices=["openclaw", "claudecode", "codex", "hermesagent", "jiuwenswarm"],
         help="Agent backend implementation (default: openclaw)",
     )
     parser.add_argument(
@@ -66,6 +66,24 @@ def build_run_batch_parser(default_model: str, default_parallel: int) -> argpars
         "--openclaw-image-model",
         default=None,
         help="Optional OpenClaw image tool model. If unset, falls back to the chat --model.",
+    )
+    parser.add_argument(
+        "--jiuwenswarm-whl",
+        default=None,
+        help=(
+            "Path to a jiuwenswarm wheel (.whl) to pip-install inside each task container "
+            "(REQUIRED for --agent-backend jiuwenswarm). The wheel version is per-task, "
+            "not baked into the image."
+        ),
+    )
+    parser.add_argument(
+        "--jiuwenswarm-config",
+        default=None,
+        help=(
+            "Optional path to a jiuwenswarm config.yaml that REPLACES the whl-bundled "
+            "config at /root/.jiuwenswarm/config/config.yaml (model/api_base is then "
+            "rewritten to point at the in-container llm_forward)."
+        ),
     )
     return parser
 
