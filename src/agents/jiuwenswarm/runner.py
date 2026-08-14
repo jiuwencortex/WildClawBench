@@ -87,7 +87,9 @@ class JiuwenSwarmAgent(BaseAgent):
             agentserver_client_host_path
             or os.environ.get("JIUWENSWARM_CLIENT_SCRIPT_PATH", "")
         )
-        self._session_id = ""
+        # Per-task session ids, keyed by task_id (thread-safe under --parallel: each
+        # task has its own container + session).
+        self._sessions: dict[str, str] = {}
 
     @property
     def expects_gateway(self) -> bool:
@@ -146,10 +148,11 @@ class JiuwenSwarmAgent(BaseAgent):
             gateway_proc = self._start_agentserver(spec.task_id)
 
             # (e) Drive the agent one-shot to completion / timeout.
-            self._session_id = f"wcb_{spec.task_id}_{int(time.time() * 1000)}"
-            mode = None
-            if spec.models_config and isinstance(spec.models_config, dict):
-                mode = spec.models_config.get("mode")
+            session_id = f"wcb_{spec.task_id}_{int(time.time() * 1000)}"
+            self._sessions[spec.task_id] = session_id
+            # Drive mode comes from the bench orchestrator via env (task-level jiuwenswarm
+            # mode, e.g. agent.plan); not set → agentserver default.
+            mode = os.environ.get("JIUWENSWARM_DRIVE_MODE") or None
             start_time = time.perf_counter()
             agent_proc = self._drive_agent(
                 spec.task_id,
@@ -169,7 +172,7 @@ class JiuwenSwarmAgent(BaseAgent):
             except subprocess.TimeoutExpired:
                 logger.warning("[%s] jiuwenswarm drive timed out", spec.task_id)
                 elapsed_time = float(spec.timeout_seconds)
-                self._interrupt_session(spec.task_id, self._session_id)
+                self._interrupt_session(spec.task_id, session_id)
                 agent_proc.kill()
                 try:
                     agent_proc.wait(timeout=15)
@@ -209,7 +212,7 @@ class JiuwenSwarmAgent(BaseAgent):
         shape graders expect, and write it to that path in the container.
         """
         try:
-            history_path = self._session_history_container_path()
+            history_path = self._session_history_container_path(task_id)
             if not history_path:
                 logger.warning(
                     "[%s] no session id; cannot locate jiuwenswarm history", task_id
@@ -497,17 +500,29 @@ class JiuwenSwarmAgent(BaseAgent):
         return True
 
     def _interrupt_session(self, task_id: str, session_id: str) -> None:
-        # Best-effort: ask the agentserver to cancel the in-flight request on timeout.
-        subprocess.run(
-            ["docker", "exec", task_id, "/bin/bash", "-lc",
-             "python3 -c '"
-             "import asyncio,sys; "
-             "sys.path.insert(0,\"/tmp\"); "
-             "from _jiuwenswarm_client import AgentServerClient; "
-             f"c=asyncio.run(AgentServerClient(\"ws://127.0.0.1:{GATEWAY_PORT}\").__aenter__()) "
-             "if False else None' 2>/dev/null || true"],
-            capture_output=True, text=True,
+        """Best-effort: ask the agentserver to cancel the in-flight request on timeout."""
+        interrupt_script = _INTERRUPT_SCRIPT.format(
+            uri=f"ws://127.0.0.1:{GATEWAY_PORT}",
+            session_id=session_id,
         )
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".py", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(interrupt_script)
+            host_script = f.name
+        try:
+            subprocess.run(
+                ["docker", "cp", host_script, f"{task_id}:/tmp/_interrupt.py"],
+                capture_output=True, text=True,
+            )
+            subprocess.run(
+                ["docker", "exec", task_id, "python3", "/tmp/_interrupt.py"],
+                capture_output=True, text=True, timeout=30,
+            )
+        except Exception:
+            pass  # container may already be tearing down
+        finally:
+            Path(host_script).unlink(missing_ok=True)
 
     # ------------------------------------------------------------------ #
     # token stats + transcript readback
@@ -537,10 +552,11 @@ class JiuwenSwarmAgent(BaseAgent):
             "request_count": int(stats.get("total_requests", 0) or 0),
         }
 
-    def _session_history_container_path(self) -> str:
-        if not self._session_id:
+    def _session_history_container_path(self, task_id: str) -> str:
+        session_id = self._sessions.get(task_id, "")
+        if not session_id:
             return ""
-        return f"{TRANSCRIPT_CONTAINER_DIR}/{self._session_id}/history.jsonl"
+        return f"{TRANSCRIPT_CONTAINER_DIR}/{session_id}/history.jsonl"
 
     def _write_compat_transcript(self, task_id: str, history_path: str) -> None:
         # Copy the jiuwenswarm session history out, convert to OpenClaw-style messages,
@@ -575,6 +591,32 @@ class JiuwenSwarmAgent(BaseAgent):
 def sh_quote(value: str) -> str:
     """Single-quote a value for safe shell interpolation."""
     return "'" + str(value).replace("'", "'\"'\"'") + "'"
+
+
+# In-container python: best-effort cancel the in-flight chat request (on timeout).
+_INTERRUPT_SCRIPT = '''\
+from __future__ import annotations
+import asyncio
+import sys
+
+sys.path.insert(0, "/tmp")
+from _jiuwenswarm_client import AgentServerClient
+
+
+async def main() -> int:
+    try:
+        async with AgentServerClient({uri!r}) as client:
+            await asyncio.wait_for(client.config_get(), timeout=10.0)
+            await asyncio.wait_for(client.chat_interrupt({session_id!r}), timeout=10.0)
+            print("[interrupt] ok", flush=True)
+    except Exception as exc:
+        print(f"[interrupt] failed: {{exc}}", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(asyncio.run(main()))
+'''
 
 
 # In-container python: drive the agent one task to completion/timeout.
