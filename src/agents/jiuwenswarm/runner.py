@@ -157,7 +157,7 @@ class JiuwenSwarmAgent(BaseAgent):
             agent_proc = self._drive_agent(
                 spec.task_id,
                 prompt=spec.prompt,
-                session_id=self._session_id,
+                session_id=session_id,
                 mode=mode,
                 timeout_seconds=spec.timeout_seconds,
                 log_path=spec.output_dir / "agent.log",
